@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test Client</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #log { height: 300px; border: 1px solid #ccc; overflow-y: scroll; padding: 10px; margin-bottom: 10px; }
+        button, input { margin: 5px; padding: 5px; }
+        .control-group { margin-bottom: 15px; border: 1px solid #eee; padding: 10px; border-radius: 5px; }
+        h3 { margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Test Client</h1>
+    <div id="status">Disconnected</div>
+    <div id="log"></div>
+    
+    <div class="control-group">
+        <h3>Connection</h3>
+        <input type="text" id="serverUrl" value="ws://localhost:8082" style="width: 250px;">
+        <button id="connect">Connect</button>
+        <button id="disconnect" disabled>Disconnect</button>
+    </div>
+    
+    <div class="control-group">
+        <h3>Send Player Update</h3>
+        <div>
+            <label>Position X: <input type="number" id="posX" value="0" step="0.1"></label>
+            <label>Y: <input type="number" id="posY" value="1" step="0.1"></label>
+            <label>Z: <input type="number" id="posZ" value="0" step="0.1"></label>
+        </div>
+        <button id="sendPos">Send Position Update</button>
+    </div>
+    
+    <div class="control-group">
+        <h3>Send Shoot Event</h3>
+        <button id="shoot">Shoot</button>
+    </div>
+    
+    <div class="control-group">
+        <h3>Network Conditions (Server-side)</h3>
+        <div>
+            <label>Latency (ms): <input type="number" id="latency" value="0" min="0" max="1000"></label>
+            <button id="setLatency">Set</button>
+        </div>
+        <div>
+            <label>Packet Loss (%): <input type="number" id="packetLoss" value="0" min="0" max="100"></label>
+            <button id="setPacketLoss">Set</button>
+        </div>
+    </div>
+    
+    <script>
+        const log = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        const serverUrlInput = document.getElementById('serverUrl');
+        const connectBtn = document.getElementById('connect');
+        const disconnectBtn = document.getElementById('disconnect');
+        const sendPosBtn = document.getElementById('sendPos');
+        const shootBtn = document.getElementById('shoot');
+        const setLatencyBtn = document.getElementById('setLatency');
+        const setPacketLossBtn = document.getElementById('setPacketLoss');
+        
+        let socket = null;
+        let playerId = null;
+        
+        function addLog(message) {
+            const entry = document.createElement('div');
+            entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        connectBtn.addEventListener('click', () => {
+            const serverUrl = serverUrlInput.value.trim();
+            socket = new WebSocket(serverUrl);
+            
+            socket.onopen = () => {
+                statusEl.textContent = 'Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                addLog(`Connected to ${serverUrl}`);
+            };
+            
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                addLog(`Received: ${JSON.stringify(message)}`);
+                
+                if (message.type === 'connection') {
+                    playerId = message.id;
+                    statusEl.textContent = `Connected (ID: ${playerId})`;
+                }
+            };
+            
+            socket.onclose = () => {
+                statusEl.textContent = 'Disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addLog('Disconnected from server');
+                socket = null;
+            };
+            
+            socket.onerror = (error) => {
+                addLog(`Error: ${error}`);
+            };
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.close();
+            }
+        });
+        
+        sendPosBtn.addEventListener('click', () => {
+            if (!socket) return;
+            
+            const position = [
+                parseFloat(document.getElementById('posX').value),
+                parseFloat(document.getElementById('posY').value),
+                parseFloat(document.getElementById('posZ').value)
+            ];
+            
+            const message = {
+                type: 'player_update',
+                position,
+                rotation: [0, 0, 0, 1] // Default quaternion
+            };
+            
+            socket.send(JSON.stringify(message));
+            addLog(`Sent position update: ${JSON.stringify(position)}`);
+        });
+        
+        shootBtn.addEventListener('click', () => {
+            if (!socket) return;
+            
+            const message = {
+                type: 'shoot',
+                origin: [0, 1, 0],
+                direction: [0, 0, -1]
+            };
+            
+            socket.send(JSON.stringify(message));
+            addLog('Sent shoot event');
+        });
+        
+        // Network condition controls
+        setLatencyBtn.addEventListener('click', () => {
+            if (!socket) return;
+            
+            const latency = parseInt(document.getElementById('latency').value);
+            if (isNaN(latency) || latency < 0) return;
+            
+            const message = {
+                type: 'admin_command',
+                command: 'set_latency',
+                value: latency
+            };
+            
+            socket.send(JSON.stringify(message));
+            addLog(`Sent command to set server latency to ${latency}ms`);
+        });
+        
+        setPacketLossBtn.addEventListener('click', () => {
+            if (!socket) return;
+            
+            const packetLoss = parseInt(document.getElementById('packetLoss').value);
+            if (isNaN(packetLoss) || packetLoss < 0 || packetLoss > 100) return;
+            
+            const message = {
+                type: 'admin_command',
+                command: 'set_packet_loss',
+                value: packetLoss
+            };
+            
+            socket.send(JSON.stringify(message));
+            addLog(`Sent command to set server packet loss to ${packetLoss}%`);
+        });
+    </script>
+</body>
+</html> 

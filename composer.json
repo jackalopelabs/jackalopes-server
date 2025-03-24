@@ -1,0 +1,32 @@
+{
+    "name": "jackalopes/jackalopes-server",
+    "description": "Multiplayer server for Jackalopes FPS game",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "authors": [
+        {
+            "name": "Mason Lawlor",
+            "email": "example@example.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "cboden/ratchet": "^0.4.4",
+        "composer/installers": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Jackalopes\\Server\\": "src/"
+        },
+        "classmap": [
+            "includes/",
+            "admin/"
+        ]
+    },
+    "config": {
+        "allow-plugins": {
+            "composer/installers": true
+        }
+    },
+    "minimum-stability": "stable"
+} 
