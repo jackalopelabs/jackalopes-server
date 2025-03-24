@@ -809,6 +809,7 @@ class JackalopesServerComponent implements MessageComponentInterface {
             FILE_APPEND
         );
     }
+}
 PHP;
 
         // Write the script to a file

@@ -12,7 +12,8 @@
     "require": {
         "php": ">=8.1",
         "composer/installers": "^2.0",
-        "react/socket": "^1.14"
+        "react/socket": "^1.14",
+        "cboden/ratchet": "^0.4.4"
     },
     "autoload": {
         "psr-4": {

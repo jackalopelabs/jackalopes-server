@@ -6,9 +6,13 @@ const path = require('path');
 const args = process.argv.slice(2);
 const useNetworkMode = args.includes('--network');
 
+// Check if a port is specified in the command line arguments
+const portArg = args.find(arg => arg.startsWith('--port='));
+const portFromArg = portArg ? parseInt(portArg.split('=')[1]) : null;
+
 // Configure the server options
 const serverOptions = {
-    port: 8080
+    port: portFromArg || 8082 // Use command line port or fall back to 8082
 };
 
 // If network mode is enabled, listen on all interfaces
