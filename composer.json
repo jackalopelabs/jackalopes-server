@@ -1,12 +1,12 @@
 {
-    "name": "jackalopes/jackalopes-server",
+    "name": "jackalopelabs/jackalopes-server",
     "description": "Multiplayer server for Jackalopes FPS game",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "authors": [
         {
             "name": "Mason Lawlor",
-            "email": "example@example.com"
+            "email": "mason@jackalope.io"
         }
     ],
     "require": {
