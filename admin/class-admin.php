@@ -283,6 +283,12 @@ class Jackalopes_Server_Admin {
         $action = sanitize_text_field($_POST['server_action']);
         $websocket_server = new Jackalopes_Server_WebSocket();
         
+        // Log the action attempt
+        error_log("Jackalopes Server: Attempting '{$action}' action");
+        
+        // Get logs path for error reporting
+        $plugin_log_path = JACKALOPES_SERVER_PLUGIN_DIR . 'plugin.log';
+        
         switch ($action) {
             case 'start':
                 $result = $websocket_server->start();
@@ -304,7 +310,66 @@ class Jackalopes_Server_Admin {
         if ($result) {
             wp_send_json_success(array('message' => 'Action completed successfully'));
         } else {
-            wp_send_json_error(array('message' => 'Failed to perform action'));
+            // Get error details from logs if available
+            $error_details = '';
+            if (file_exists($plugin_log_path)) {
+                // Get the last 10 lines of the log file
+                $log_lines = file($plugin_log_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                if ($log_lines) {
+                    $last_lines = array_slice($log_lines, -10);
+                    $error_details = implode("\n", $last_lines);
+                }
+            }
+            
+            // Check Node.js availability as a possible cause
+            $node_available = false;
+            exec('which node', $output, $return_var);
+            if ($return_var === 0) {
+                $node_available = true;
+                $node_path = $output[0];
+                exec('node -v', $node_version, $version_return_var);
+                $node_version = ($version_return_var === 0 && !empty($node_version)) ? $node_version[0] : 'unknown';
+            }
+            
+            // Get environment information
+            $env_info = array(
+                'WordPress Version' => get_bloginfo('version'),
+                'PHP Version' => phpversion(),
+                'Node.js Available' => $node_available ? 'Yes' : 'No',
+                'Node.js Path' => $node_available ? $node_path : 'N/A',
+                'Node.js Version' => $node_available ? $node_version : 'N/A',
+                'Operating System' => PHP_OS,
+                'Plugin Directory' => JACKALOPES_SERVER_PLUGIN_DIR,
+            );
+            
+            // Build the error message
+            $error_message = 'Failed to ' . $action . ' the server. ';
+            
+            // Add more specific advice based on the action
+            switch ($action) {
+                case 'start':
+                    $error_message .= 'This may be due to port conflicts, Node.js not being available, ';
+                    $error_message .= 'or missing dependencies. Check the plugin logs for details.';
+                    break;
+                    
+                case 'stop':
+                case 'restart':
+                    $error_message .= 'The server process may not be running or could not be terminated.';
+                    break;
+            }
+            
+            // Log the detailed error info
+            error_log("Jackalopes Server Error: {$error_message}");
+            error_log("Environment info: " . print_r($env_info, true));
+            if ($error_details) {
+                error_log("Log details: {$error_details}");
+            }
+            
+            wp_send_json_error(array(
+                'message' => $error_message,
+                'details' => $error_details,
+                'env_info' => $env_info
+            ));
         }
     }
     

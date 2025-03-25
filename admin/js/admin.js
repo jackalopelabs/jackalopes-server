@@ -167,14 +167,50 @@
                     // Wait a moment then check status again
                     setTimeout(checkServerStatus, 2000);
                 } else {
-                    alert('Error: ' + response.data.message);
-                    checkServerStatus();
+                    // Show detailed error message
+                    const errorMsg = response.data && response.data.message ? response.data.message : 'Unknown error occurred';
+                    console.error('Server action error:', errorMsg);
+                    
+                    // Show error in alert
+                    alert('Error: ' + errorMsg);
+                    
+                    // Also show in status
+                    $('#server-status-indicator, #dashboard-server-status')
+                        .removeClass('status-running status-stopped status-unknown')
+                        .addClass('status-stopped')
+                        .text('Error: ' + errorMsg);
+                    
+                    // Re-enable buttons
+                    $('.server-actions button, .quick-actions button').prop('disabled', false);
                 }
             },
             error: function(xhr, status, error) {
                 console.error('AJAX error:', error);
-                alert('An error occurred. Please check the console for details.');
-                checkServerStatus();
+                console.error('Response text:', xhr.responseText);
+                
+                // Try to parse the response for more details
+                let errorMessage = 'An error occurred. Please check the server logs for details.';
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.data && response.data.message) {
+                        errorMessage = response.data.message;
+                    }
+                } catch(e) {
+                    // Use the error string if we can't parse the response
+                    errorMessage = error || 'Unknown error';
+                }
+                
+                // Show alert with error
+                alert('Error: ' + errorMessage);
+                
+                // Update status display
+                $('#server-status-indicator, #dashboard-server-status')
+                    .removeClass('status-running status-stopped status-unknown')
+                    .addClass('status-stopped')
+                    .text('Error: ' + errorMessage);
+                
+                // Re-enable buttons
+                $('.server-actions button, .quick-actions button').prop('disabled', false);
             }
         });
     }
