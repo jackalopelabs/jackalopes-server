@@ -72,6 +72,11 @@ class Jackalopes_Server_WebSocket {
         $this->pid_file = JACKALOPES_SERVER_PLUGIN_DIR . 'server.pid';
         $this->log_file = JACKALOPES_SERVER_PLUGIN_DIR . 'server.log';
         
+        // Log plugin initialization
+        $this->log_message('Initializing Jackalopes Server');
+        $this->log_message('Plugin directory: ' . JACKALOPES_SERVER_PLUGIN_DIR);
+        $this->log_message('Log file location: ' . $this->log_file);
+        
         // Check if server is already running
         $this->check_status();
     }
@@ -107,6 +112,7 @@ class Jackalopes_Server_WebSocket {
         
         // Check if Node.js is available
         if (!$this->check_nodejs()) {
+            $this->log_message('Error: Failed to start server because Node.js is not available or configured correctly.');
             return false;
         }
         
@@ -363,8 +369,16 @@ class Jackalopes_Server_WebSocket {
         $timestamp = date('Y-m-d H:i:s');
         $log_entry = "[$timestamp] $message\n";
         
+        $plugin_log = JACKALOPES_SERVER_PLUGIN_DIR . 'plugin.log';
+        
+        // Create log file if it doesn't exist
+        if (!file_exists($plugin_log)) {
+            touch($plugin_log);
+            chmod($plugin_log, 0664);
+        }
+        
         file_put_contents(
-            JACKALOPES_SERVER_PLUGIN_DIR . 'plugin.log',
+            $plugin_log,
             $log_entry,
             FILE_APPEND
         );
@@ -376,12 +390,15 @@ class Jackalopes_Server_WebSocket {
      * @since    1.0.0
      * @return   bool    True if Node.js is available, false otherwise
      */
-    private function check_nodejs() {
+    public function check_nodejs() {
         // Check if node is available
         exec('which node', $output, $return_var);
         
         if ($return_var !== 0) {
             $this->log_message('Error: Node.js not found. Make sure Node.js is installed and available in the PATH.');
+            $this->log_message('System environment: ' . php_uname());
+            $this->log_message('Web server user: ' . exec('whoami'));
+            $this->log_message('Current working directory: ' . getcwd());
             return false;
         }
         
