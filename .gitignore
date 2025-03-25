@@ -25,4 +25,10 @@ wp-content/
 
 # OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Keep bundled Node.js binaries
+!/bin/node
+!/bin/npm
+!/bin/npx
+!/bin/node_modules/ 

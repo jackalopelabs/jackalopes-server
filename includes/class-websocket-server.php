@@ -65,6 +65,15 @@ class Jackalopes_Server_WebSocket {
     private $log_file;
     
     /**
+     * Path to Node.js executable
+     *
+     * @since    1.0.0
+     * @access   private
+     * @var      string    $node_executable    Path to Node.js executable
+     */
+    private $node_executable = 'node';
+    
+    /**
      * Constructor
      */
     public function __construct() {
@@ -134,12 +143,14 @@ class Jackalopes_Server_WebSocket {
         $this->log_message('Server directory: ' . JACKALOPES_SERVER_PLUGIN_DIR);
         $this->log_message('Server script: ' . $this->server_script);
         $this->log_message('Using port: ' . $port);
+        $this->log_message('Node.js executable: ' . $this->node_executable);
         
         // Start the Node.js server process using nohup to keep it running
         $command = sprintf(
-            'cd %s && SERVER_PORT=%s node %s > %s 2>&1 & echo $! > %s',
+            'cd %s && SERVER_PORT=%s %s %s > %s 2>&1 & echo $! > %s',
             escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR),
             escapeshellarg($port),
+            escapeshellarg($this->node_executable),
             escapeshellarg($this->server_script),
             escapeshellarg($this->log_file),
             escapeshellarg($this->pid_file)
@@ -391,34 +402,66 @@ class Jackalopes_Server_WebSocket {
      * @return   bool    True if Node.js is available, false otherwise
      */
     public function check_nodejs() {
-        // Check if node is available
-        exec('which node', $output, $return_var);
+        // First, check if we have a bundled Node.js executable
+        $bundled_node = JACKALOPES_SERVER_PLUGIN_DIR . 'bin/node';
+        $use_bundled = false;
         
-        if ($return_var !== 0) {
-            $this->log_message('Error: Node.js not found. Make sure Node.js is installed and available in the PATH.');
-            $this->log_message('System environment: ' . php_uname());
-            $this->log_message('Web server user: ' . exec('whoami'));
-            $this->log_message('Current working directory: ' . getcwd());
-            return false;
+        if (file_exists($bundled_node)) {
+            $this->log_message('Found bundled Node.js executable');
+            // Make sure it's executable
+            chmod($bundled_node, 0755);
+            $use_bundled = true;
+        }
+        
+        // Check if system node is available if we're not using bundled
+        if (!$use_bundled) {
+            exec('which node', $output, $return_var);
+            
+            if ($return_var !== 0) {
+                $this->log_message('Error: Node.js not found in system. Looking for bundled version...');
+                
+                // No system Node.js and no bundled Node.js
+                if (!file_exists($bundled_node)) {
+                    $this->log_message('Error: No bundled Node.js found either. Please install Node.js or include it in the bin directory.');
+                    $this->log_message('System environment: ' . php_uname());
+                    $this->log_message('Web server user: ' . exec('whoami'));
+                    $this->log_message('Current working directory: ' . getcwd());
+                    return false;
+                }
+                
+                // We have bundled Node.js but didn't detect it earlier (permissions issue?)
+                $this->log_message('Found bundled Node.js after second check');
+                chmod($bundled_node, 0755);
+                $use_bundled = true;
+            }
         }
         
         // Check node version
-        exec('node -v', $version_output, $version_return_var);
+        $node_cmd = $use_bundled ? $bundled_node : 'node';
+        exec($node_cmd . ' -v', $version_output, $version_return_var);
         
         if ($version_return_var === 0 && !empty($version_output)) {
-            $this->log_message('Node.js version: ' . $version_output[0]);
+            $this->log_message('Node.js version: ' . $version_output[0] . ($use_bundled ? ' (bundled)' : ' (system)'));
         } else {
             $this->log_message('Warning: Could not determine Node.js version.');
         }
         
+        // Update the server start command based on whether we're using bundled Node.js
+        if ($use_bundled) {
+            $this->node_executable = $bundled_node;
+        } else {
+            $this->node_executable = 'node';
+        }
+        
         // Check if ws module is installed
-        exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && npm list ws', $ws_output, $ws_return_var);
+        $npm_cmd = $use_bundled ? (dirname($bundled_node) . '/npm') : 'npm';
+        exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && ' . $npm_cmd . ' list ws', $ws_output, $ws_return_var);
         
         if ($ws_return_var !== 0 || !preg_match('/ws@/', implode("\n", $ws_output))) {
             $this->log_message('Warning: WebSocket module (ws) not found. Installing dependencies...');
             
             // Try to install dependencies
-            exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && npm install', $npm_output, $npm_return_var);
+            exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && ' . $npm_cmd . ' install', $npm_output, $npm_return_var);
             
             if ($npm_return_var !== 0) {
                 $this->log_message('Error: Failed to install Node.js dependencies.');
