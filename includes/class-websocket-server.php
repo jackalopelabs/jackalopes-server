@@ -99,12 +99,20 @@ class Jackalopes_Server_WebSocket {
             return false;
         }
         
+        // Check if Node.js is available
+        if (!$this->check_nodejs()) {
+            return false;
+        }
+        
+        // Update .env file with correct port
+        $this->update_env_file('SERVER_PORT', $port);
+        
         // Start the Node.js server process using nohup to keep it running
         $command = sprintf(
-            'cd %s && nohup node %s --port=%s > %s 2>&1 & echo $! > %s',
+            'cd %s && SERVER_PORT=%s nohup node %s > %s 2>&1 & echo $! > %s',
             escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR),
-            escapeshellarg($this->server_script),
             escapeshellarg($port),
+            escapeshellarg($this->server_script),
             escapeshellarg($this->log_file),
             escapeshellarg($this->pid_file)
         );
@@ -809,6 +817,90 @@ class JackalopesServerComponent implements MessageComponentInterface {
             FILE_APPEND
         );
     }
+    
+    /**
+     * Update .env file with a key-value pair
+     *
+     * @since    1.0.0
+     * @param    string    $key      Environment variable key
+     * @param    string    $value    Environment variable value
+     */
+    private function update_env_file($key, $value) {
+        $env_file = JACKALOPES_SERVER_PLUGIN_DIR . '.env';
+        
+        if (!file_exists($env_file)) {
+            // If .env file doesn't exist, create it
+            $env_content = "# Server settings\n$key=$value\n";
+            file_put_contents($env_file, $env_content);
+            return;
+        }
+        
+        // Read the current .env file
+        $env_content = file_get_contents($env_file);
+        
+        // Check if the key already exists
+        if (preg_match("/^$key=.*$/m", $env_content)) {
+            // Replace the existing key-value pair
+            $env_content = preg_replace("/^$key=.*$/m", "$key=$value", $env_content);
+        } else {
+            // Add the key-value pair at the end of the file
+            $env_content .= "\n$key=$value\n";
+        }
+        
+        // Write the updated content back to the file
+        file_put_contents($env_file, $env_content);
+    }
+    
+    /**
+     * Check if Node.js is available on the system
+     *
+     * @since    1.0.0
+     * @return   bool    True if Node.js is available, false otherwise
+     */
+    private function check_nodejs() {
+        // Try in plugin directory first (for local Node.js installation)
+        $nodejs_paths = [
+            // Check node in the plugin directory (for custom installations)
+            JACKALOPES_SERVER_PLUGIN_DIR . 'node_modules/.bin/node',
+            // Check system default paths
+            'node',
+            '/usr/bin/node',
+            '/usr/local/bin/node',
+            '/opt/homebrew/bin/node',
+            // Add more paths as needed
+        ];
+        
+        foreach ($nodejs_paths as $node_path) {
+            $test_command = sprintf('%s -v', escapeshellcmd($node_path));
+            exec($test_command . ' 2>&1', $output, $return_var);
+            
+            if ($return_var === 0 && !empty($output) && strpos($output[0], 'v') === 0) {
+                $this->log_message('Found Node.js: ' . $output[0] . ' at ' . $node_path);
+                return true;
+            }
+        }
+        
+        $this->log_message('Error: Node.js not found. Please ensure Node.js is installed and available in PATH.');
+        
+        // Additional diagnostic information
+        exec('which node 2>&1', $which_output, $which_return);
+        if ($which_return === 0) {
+            $this->log_message('Node.js found at: ' . $which_output[0]);
+            
+            // Test if we can execute it
+            exec($which_output[0] . ' -v 2>&1', $node_output, $node_return);
+            if ($node_return === 0) {
+                $this->log_message('Node.js version: ' . $node_output[0]);
+            } else {
+                $this->log_message('Error executing Node.js: ' . implode("\n", $node_output));
+            }
+        } else {
+            $this->log_message('Node.js not found in PATH. Error: ' . implode("\n", $which_output));
+        }
+        
+        return false;
+    }
+}
 PHP;
 
         // Write the script to a file
