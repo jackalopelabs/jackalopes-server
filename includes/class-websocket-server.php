@@ -444,6 +444,7 @@ class Jackalopes_Server_WebSocket {
             $this->log_message('Node.js version: ' . $version_output[0] . ($use_bundled ? ' (bundled)' : ' (system)'));
         } else {
             $this->log_message('Warning: Could not determine Node.js version.');
+            // Even if we can't determine the version, we'll still try to use the node executable
         }
         
         // Update the server start command based on whether we're using bundled Node.js
@@ -453,24 +454,9 @@ class Jackalopes_Server_WebSocket {
             $this->node_executable = 'node';
         }
         
-        // Check if ws module is installed
-        $npm_cmd = $use_bundled ? (dirname($bundled_node) . '/npm') : 'npm';
-        exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && ' . $npm_cmd . ' list ws', $ws_output, $ws_return_var);
-        
-        if ($ws_return_var !== 0 || !preg_match('/ws@/', implode("\n", $ws_output))) {
-            $this->log_message('Warning: WebSocket module (ws) not found. Installing dependencies...');
-            
-            // Try to install dependencies
-            exec('cd ' . escapeshellarg(JACKALOPES_SERVER_PLUGIN_DIR) . ' && ' . $npm_cmd . ' install', $npm_output, $npm_return_var);
-            
-            if ($npm_return_var !== 0) {
-                $this->log_message('Error: Failed to install Node.js dependencies.');
-                $this->log_message('npm output: ' . implode("\n", $npm_output));
-                return false;
-            }
-            
-            $this->log_message('Node.js dependencies installed successfully.');
-        }
+        // We're skipping the npm and dependency check since all necessary dependencies 
+        // should be packaged with the plugin
+        $this->log_message('Using Node.js executable: ' . $this->node_executable);
         
         return true;
     }
