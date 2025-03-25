@@ -64,6 +64,40 @@ chmod +x web/app/plugins/jackalopes-server/bin/node
 chmod +x web/app/plugins/jackalopes-server/bin/npm
 ```
 
+### WebSocket URL Configuration
+
+For proper WebSocket connectivity, you need to configure your web server (Nginx/Apache) with a proxy to forward WebSocket connections. Here's how to set it up:
+
+#### Nginx Configuration
+
+Add this to your server block configuration:
+
+```nginx
+# WebSocket proxy for Jackalopes Server
+location /websocket/ {
+    proxy_pass http://localhost:8082;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400; # 24 hours
+    proxy_buffering off;
+}
+```
+
+#### Game Client Connection
+
+In your game client, use the following WebSocket URL:
+
+```
+ws://yourdomain.com/websocket/
+```
+
+Note the trailing slash - it's required for the proper routing of WebSocket connections.
+
 ### Future Automation Plans
 
 We plan to further automate the server setup process:
@@ -108,7 +142,7 @@ kill [PID]
 Use the following WebSocket URL format to connect from your game client:
 
 ```
-ws://your-wordpress-site.com:8080
+ws://your-wordpress-site.com/websocket/
 ```
 
 ## API Endpoints
