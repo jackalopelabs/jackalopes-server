@@ -289,18 +289,12 @@ function handleJoinSession(clientId, data) {
         return;
     }
     
-    // Generate or use provided session key/ID - support multiple formats
+    // Generate or use provided session key
     let sessionId;
     let sessionKey;
     
-    // Check all possible session identifier properties the client might send
-    const requestedSessionId = data.sessionKey || data.session_id || data.sessionId || 
-                              (data.session && typeof data.session === 'string' ? data.session : null);
-    
-    logMessage(`Client ${clientId} requested to join session: ${requestedSessionId || 'NONE'}`);
-    
-    if (requestedSessionId) {
-        sessionKey = requestedSessionId;
+    if (data.sessionKey) {
+        sessionKey = data.sessionKey;
         
         // Find session with this key
         let found = false;
@@ -308,19 +302,13 @@ function handleJoinSession(clientId, data) {
             if (session.key === sessionKey) {
                 sessionId = id;
                 found = true;
-                logMessage(`Found existing session with key ${sessionKey}, ID: ${sessionId}`);
                 break;
             }
         }
         
         if (!found) {
             // Create new session with the provided key
-            sessionId = requestedSessionId.startsWith('session_') ? 
-                        requestedSessionId : 
-                        'session_' + requestedSessionId.toLowerCase();
-            
-            logMessage(`Creating new session with requested ID: ${sessionId}`);
-            
+            sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
             sessions.set(sessionId, {
                 key: sessionKey,
                 players: new Map(),
@@ -331,8 +319,6 @@ function handleJoinSession(clientId, data) {
         // Create a new session with a random key
         sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
         sessionKey = Math.random().toString(36).substr(2, 9).toUpperCase();
-        
-        logMessage(`No session ID provided, creating random session: ${sessionId}`);
         
         sessions.set(sessionId, {
             key: sessionKey,
@@ -370,19 +356,10 @@ function handleJoinSession(clientId, data) {
                     name: client.playerName
                 }
             });
-            
-            // Send existing player info to the new player
-            sendToClient(clientId, {
-                type: 'player_joined',
-                player: {
-                    id: otherId,
-                    name: clients.get(otherClientId).playerName
-                }
-            });
         }
     }
     
-    logMessage(`Client ${clientId} (${client.playerName}) joined session ${sessionId} with ${session.players.size} total players`);
+    logMessage(`Client ${clientId} (${client.playerName}) joined session ${sessionId}`);
 }
 
 /**
@@ -392,7 +369,6 @@ function handlePlayerUpdate(clientId, data) {
     const client = clients.get(clientId);
     
     if (!client || !client.authenticated || !client.sessionId) {
-        logMessage(`Rejected player_update: Client ${clientId} not authenticated or not in a session`);
         return;
     }
     
@@ -401,39 +377,22 @@ function handlePlayerUpdate(clientId, data) {
             type: 'error',
             message: 'Missing state in player_update'
         });
-        logMessage(`Invalid player_update format from client ${clientId}: Missing state`);
         return;
     }
     
     const session = sessions.get(client.sessionId);
-    if (!session) {
-        logMessage(`Rejected player_update: Session ${client.sessionId} not found for client ${clientId}`);
-        return;
-    }
-    
-    // Get position for logging
-    const position = data.state.position ? 
-        `[${data.state.position.map(p => p.toFixed(2)).join(', ')}]` : 
-        'unknown';
+    if (!session) return;
     
     // Broadcast to other players in session
-    let updatesSent = 0;
     for (const [otherId, otherClientId] of session.players.entries()) {
         if (otherId !== client.playerId) {
             sendToClient(otherClientId, {
                 type: 'player_update',
                 player: client.playerId,
-                player_id: client.playerId, // Include both formats for compatibility
                 state: data.state,
                 timestamp: Date.now()
             });
-            updatesSent++;
         }
-    }
-    
-    // Log every 10th update to avoid flooding logs
-    if (Math.random() < 0.1) {
-        logMessage(`Player ${client.playerId} update (pos: ${position}) broadcast to ${updatesSent} players in session ${client.sessionId}`);
     }
 }
 
@@ -447,24 +406,11 @@ function handleGameEvent(clientId, data) {
         return;
     }
     
-    // Support multiple event formats from clients
-    let eventData;
-    
-    if (data.event) {
-        // Server expected format
-        eventData = data.event;
-    } else if (data.event_type && data.data) {
-        // Client is sending {type: 'game_event', event_type: '...', data: {...}}
-        eventData = {
-            event_type: data.event_type,
-            ...data.data
-        };
-    } else {
+    if (!data.event) {
         sendToClient(clientId, {
             type: 'error',
             message: 'Missing event in game_event'
         });
-        logMessage(`Invalid game_event format from client ${clientId}: ${JSON.stringify(data)}`);
         return;
     }
     
@@ -472,19 +418,17 @@ function handleGameEvent(clientId, data) {
     if (!session) return;
     
     // Add player and timestamp information
-    eventData.player_id = client.playerId; // Add both formats
-    eventData.player = client.playerId;    // for compatibility
-    eventData.timestamp = Date.now();
+    const event = data.event;
+    event.player = client.playerId;
+    event.timestamp = Date.now();
     
     // Broadcast to all players in session (including sender)
     for (const [_, otherClientId] of session.players.entries()) {
         sendToClient(otherClientId, {
             type: 'game_event',
-            event: eventData
+            event: event
         });
     }
-    
-    logMessage(`Game event ${eventData.event_type || 'unknown'} from ${client.playerId} broadcast to ${session.players.size} players`);
 }
 
 /**
