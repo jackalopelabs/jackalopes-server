@@ -98,6 +98,59 @@ ws://yourdomain.com/websocket/
 
 Note the trailing slash - it's required for the proper routing of WebSocket connections.
 
+## Cross-Platform Deployment
+
+The plugin includes a bundled Node.js binary for macOS systems by default. For deployment to different environments, follow these steps:
+
+### Linux Deployment
+
+When deploying to a Linux server:
+
+1. **Download Linux-Compatible Node.js**:
+   ```bash
+   cd /path/to/jackalopes-server
+   curl -sL https://nodejs.org/dist/v18.18.0/node-v18.18.0-linux-x64.tar.gz -o node-linux.tar.gz
+   mkdir -p linux-bin
+   tar -xzf node-linux.tar.gz -C linux-bin --strip-components=1
+   rm node-linux.tar.gz
+   ```
+
+2. **Update Restart Script**:
+   Edit `restart-server.sh` to use the Linux binary:
+   ```bash
+   # Change this line
+   ./bin/node server.js > server.log 2>&1 &
+   
+   # To this
+   ./linux-bin/bin/node server.js > server.log 2>&1 &
+   ```
+
+3. **Set Permissions**:
+   ```bash
+   chmod +x restart-server.sh
+   chmod +x linux-bin/bin/node
+   ```
+
+### Windows Deployment
+
+For Windows servers:
+
+1. **Download Windows-Compatible Node.js**:
+   ```bash
+   # Download Node.js for Windows and extract to win-bin directory
+   ```
+
+2. **Create a Batch File Equivalent**:
+   Create `restart-server.bat` with appropriate Windows commands
+
+### Automatic Multi-Platform Support
+
+For projects requiring deployment across multiple platforms, consider:
+
+1. **Detection Script**: Create a setup script that detects the OS and downloads the appropriate Node.js binary
+2. **Environment Variables**: Use environment variables to determine which binary to use
+3. **Platform-Specific Scripts**: Maintain separate restart scripts for each platform
+
 ### Future Automation Plans
 
 We plan to further automate the server setup process:

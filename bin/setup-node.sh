@@ -1,76 +1,88 @@
 #!/bin/bash
 
-# Script to download and set up Node.js binaries for the Jackalopes Server plugin
-# This script should be run during development to prepare the plugin for distribution
+# Jackalopes Server - Node.js Setup Script
+# This script automatically downloads and configures the appropriate Node.js binary
+# for the current platform.
 
-NODE_VERSION="18.19.1"  # LTS version
-PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DIR="$PLUGIN_DIR/bin"
+NODE_VERSION="18.18.0"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Create bin directory if it doesn't exist
-mkdir -p "$BIN_DIR"
+echo "🔍 Detecting platform..."
+OS="$(uname -s)"
+ARCH="$(uname -m)"
 
-# Detect OS and architecture
-OS=$(uname -s)
-ARCH=$(uname -m)
-
-# Set download URL based on OS and architecture
-if [[ "$OS" == "Linux" ]]; then
-    if [[ "$ARCH" == "x86_64" ]]; then
-        DOWNLOAD_URL="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.gz"
-    elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
-        DOWNLOAD_URL="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.gz"
+case "$OS" in
+  Linux)
+    echo "🐧 Linux detected ($ARCH)"
+    NODE_DIR="linux-bin"
+    if [ "$ARCH" == "x86_64" ]; then
+      NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+    elif [ "$ARCH" == "aarch64" ] || [ "$ARCH" == "arm64" ]; then
+      NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.gz"
     else
-        echo "Unsupported architecture: $ARCH"
-        exit 1
+      echo "❌ Unsupported architecture: $ARCH"
+      exit 1
     fi
-elif [[ "$OS" == "Darwin" ]]; then
-    if [[ "$ARCH" == "x86_64" ]]; then
-        DOWNLOAD_URL="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-darwin-x64.tar.gz"
-    elif [[ "$ARCH" == "arm64" ]]; then
-        DOWNLOAD_URL="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-darwin-arm64.tar.gz"
+    ;;
+    
+  Darwin)
+    echo "🍎 macOS detected ($ARCH)"
+    NODE_DIR="bin"
+    if [ "$ARCH" == "x86_64" ]; then
+      NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-x64.tar.gz"
+    elif [ "$ARCH" == "arm64" ]; then
+      NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-arm64.tar.gz" 
     else
-        echo "Unsupported architecture: $ARCH"
-        exit 1
+      echo "❌ Unsupported architecture: $ARCH"
+      exit 1
     fi
-else
-    echo "Unsupported OS: $OS"
+    ;;
+    
+  *)
+    echo "❌ Unsupported operating system: $OS"
     exit 1
+    ;;
+esac
+
+echo "📥 Downloading Node.js v${NODE_VERSION} for $OS ($ARCH)..."
+cd "$PLUGIN_DIR"
+mkdir -p "$NODE_DIR"
+
+# Download and extract Node.js
+curl -sL "$NODE_URL" -o "node-temp.tar.gz"
+if [ $? -ne 0 ]; then
+  echo "❌ Failed to download Node.js binary"
+  exit 1
 fi
 
-echo "Downloading Node.js v$NODE_VERSION for $OS $ARCH..."
-TEMP_DIR=$(mktemp -d)
-DOWNLOAD_FILE="$TEMP_DIR/node.tar.gz"
+tar -xzf "node-temp.tar.gz" -C "$NODE_DIR" --strip-components=1
+if [ $? -ne 0 ]; then
+  echo "❌ Failed to extract Node.js binary"
+  rm -f "node-temp.tar.gz"
+  exit 1
+fi
+rm -f "node-temp.tar.gz"
 
-# Download Node.js
-curl -L "$DOWNLOAD_URL" -o "$DOWNLOAD_FILE"
+# Set executable permissions
+chmod +x "$NODE_DIR/bin/node"
+if [ $? -ne 0 ]; then
+  echo "❌ Failed to set executable permissions"
+  exit 1
+fi
 
-# Extract the binary files we need
-echo "Extracting Node.js..."
-tar -xzf "$DOWNLOAD_FILE" -C "$TEMP_DIR"
+echo "✅ Successfully installed Node.js v${NODE_VERSION} to $NODE_DIR"
+echo "🚀 You can now run the server using ./restart-server.sh"
 
-# Get the extracted directory name
-EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "node-*" | head -n 1)
+# Create symbolic links in bin directory for compatibility
+if [ "$NODE_DIR" != "bin" ]; then
+  echo "🔗 Creating symbolic links in bin directory for compatibility..."
+  mkdir -p bin
+  if [ -e "bin/node" ]; then
+    rm "bin/node"
+  fi
+  ln -sf "../$NODE_DIR/bin/node" "bin/node"
+  echo "✅ Links created."
+fi
 
-# Copy only the necessary binaries
-echo "Copying Node.js binaries to plugin..."
-cp "$EXTRACTED_DIR/bin/node" "$BIN_DIR/node"
-
-# Make binaries executable
-chmod +x "$BIN_DIR/node"
-
-# Clean up
-rm -rf "$TEMP_DIR"
-
-echo "Node.js binary installed in: $BIN_DIR"
-echo "Setup complete! Node.js v$NODE_VERSION is now bundled with the plugin."
-
-# Create a simple shell script wrapper for npm
-cat > "$BIN_DIR/npm" << 'EOF'
-#!/bin/bash
-# This is a simple wrapper for npm that uses the bundled Node.js
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$DIR/node" "$(which npm)" "$@"
-EOF
-
-chmod +x "$BIN_DIR/npm" 
+exit 0 
