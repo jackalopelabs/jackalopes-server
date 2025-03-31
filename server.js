@@ -383,13 +383,28 @@ function handlePlayerUpdate(clientId, data) {
     const session = sessions.get(client.sessionId);
     if (!session) return;
     
+    // Extract the player type from the state data
+    const playerType = data.state.playerType || 'merc';
+    
+    // Store character type info with player record for future consistency
+    if (!client.playerType) {
+        client.playerType = playerType;
+        logMessage(`Set player ${client.playerId} (${client.playerName}) type to ${playerType}`);
+    }
+    
     // Broadcast to other players in session
     for (const [otherId, otherClientId] of session.players.entries()) {
         if (otherId !== client.playerId) {
             sendToClient(otherClientId, {
                 type: 'player_update',
                 player: client.playerId,
-                state: data.state,
+                // Always include player's type in every update for consistency
+                playerType: client.playerType,
+                state: {
+                    ...data.state,
+                    // Ensure playerType is always included in state
+                    playerType: client.playerType
+                },
                 timestamp: Date.now()
             });
         }
@@ -420,9 +435,16 @@ function handleGameEvent(clientId, data) {
     // Add player and timestamp information
     const event = data.event;
     event.player = client.playerId;
+    event.playerName = client.playerName;
     event.timestamp = Date.now();
     
-    // Broadcast to all players in session (including sender)
+    // If it's a shot event, include the player type to help with rendering
+    if (event.event_type === 'player_shoot') {
+        event.playerType = client.playerType || 'merc';
+        logMessage(`Player ${client.playerName} fired shot (${event.shotId})`);
+    }
+    
+    // Broadcast to all players in session (including sender for consistent state)
     for (const [_, otherClientId] of session.players.entries()) {
         sendToClient(otherClientId, {
             type: 'game_event',
