@@ -281,7 +281,7 @@ function handleAuth(clientId, data) {
 function handleJoinSession(clientId, data) {
     const client = clients.get(clientId);
     
-    if (!client || !client.authenticated) {
+    if (!client.authenticated) {
         sendToClient(clientId, {
             type: 'error',
             message: 'You must authenticate before joining a session'
@@ -289,110 +289,77 @@ function handleJoinSession(clientId, data) {
         return;
     }
     
-    // Validate session key
-    if (!data.sessionKey) {
-        sendToClient(clientId, {
-            type: 'error',
-            message: 'Missing session key'
-        });
-        return;
-    }
+    // Generate or use provided session key
+    let sessionId;
+    let sessionKey;
     
-    // Determine if the player is a merc or jackalope based on their player ID
-    // This will ensure consistent player types across sessions
-    // Even = jackalope, Odd = merc
-    let playerType = 'merc'; // Default
-    
-    // If player ID is provided by the client, use it to determine player type
-    if (data.playerType && (data.playerType === 'merc' || data.playerType === 'jackalope')) {
-        playerType = data.playerType;
-    } else {
-        // Otherwise, determine by player ID hash
-        try {
-            if (client.playerId) {
-                // Use a simple hash of the player ID
-                const idSum = client.playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                playerType = idSum % 2 === 0 ? 'jackalope' : 'merc';
+    if (data.sessionKey) {
+        sessionKey = data.sessionKey;
+        
+        // Find session with this key
+        let found = false;
+        for (const [id, session] of sessions.entries()) {
+            if (session.key === sessionKey) {
+                sessionId = id;
+                found = true;
+                break;
             }
-        } catch (e) {
-            console.error('Error determining player type:', e);
         }
-    }
-    
-    // Store the determined player type with the client
-    client.playerType = playerType;
-    
-    // If jackalope, make sure we log it
-    if (playerType === 'jackalope') {
-        logMessage(`Player ${client.playerName} is joining as a jackalope`);
+        
+        if (!found) {
+            // Create new session with the provided key
+            sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+            sessions.set(sessionId, {
+                key: sessionKey,
+                players: new Map(),
+                created: Date.now()
+            });
+        }
     } else {
-        logMessage(`Player ${client.playerName} is joining as a merc`);
-    }
-    
-    // Create or join a session
-    let session = sessions.get(data.sessionKey);
-    
-    if (!session) {
-        // Create a new session
-        session = {
-            key: data.sessionKey,
+        // Create a new session with a random key
+        sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+        sessionKey = Math.random().toString(36).substr(2, 9).toUpperCase();
+        
+        sessions.set(sessionId, {
+            key: sessionKey,
             players: new Map(),
             created: Date.now()
-        };
-        sessions.set(data.sessionKey, session);
-        logMessage(`Session ${data.sessionKey} created by ${client.playerName}`);
+        });
     }
     
-    // If player was already in session, remove them first
-    if (client.sessionId) {
-        const oldSession = sessions.get(client.sessionId);
-        if (oldSession) {
-            oldSession.players.delete(client.playerId);
-            logMessage(`Player ${client.playerName} left session ${client.sessionId}`);
-        }
-    }
+    const session = sessions.get(sessionId);
     
-    // Join the new session
-    client.sessionId = data.sessionKey;
+    // Add player to session
     session.players.set(client.playerId, clientId);
+    client.sessionId = sessionId;
     
-    // Notify client of successful join
+    // Notify client
     sendToClient(clientId, {
-        type: 'session_joined',
-        session: data.sessionKey,
-        playerId: client.playerId,
-        playerName: client.playerName,
-        playerType: client.playerType, // Send the determined player type
-        timestamp: Date.now()
+        type: 'join_success',
+        session: {
+            id: sessionId,
+            key: sessionKey
+        },
+        player: {
+            id: client.playerId,
+            name: client.playerName
+        }
     });
     
     // Notify other players in session
-    for (const [playerId, otherClientId] of session.players.entries()) {
-        if (playerId !== client.playerId) {
-            // Let other players know a new player joined
+    for (const [otherId, otherClientId] of session.players.entries()) {
+        if (otherId !== client.playerId) {
             sendToClient(otherClientId, {
                 type: 'player_joined',
-                id: client.playerId,
-                playerName: client.playerName,
-                playerType: client.playerType, // Include player type in notification
-                timestamp: Date.now()
+                player: {
+                    id: client.playerId,
+                    name: client.playerName
+                }
             });
-            
-            // Let the new player know about existing players
-            const otherClient = clients.get(otherClientId);
-            if (otherClient) {
-                sendToClient(clientId, {
-                    type: 'player_joined',
-                    id: otherClient.playerId,
-                    playerName: otherClient.playerName,
-                    playerType: otherClient.playerType || 'unknown', // Include other player's type
-                    timestamp: Date.now()
-                });
-            }
         }
     }
     
-    logMessage(`Player ${client.playerName} joined session ${data.sessionKey} as ${client.playerType}`);
+    logMessage(`Client ${clientId} (${client.playerName}) joined session ${sessionId}`);
 }
 
 /**
@@ -471,40 +438,31 @@ function handleGameEvent(clientId, data) {
     event.playerName = client.playerName;
     event.timestamp = Date.now();
     
-    // If it's a shot event, include the player type to help with rendering
+    // Handle specific event types
     if (event.event_type === 'player_shoot') {
+        // If it's a shot event, include the player type to help with rendering
         event.playerType = client.playerType || 'merc';
         logMessage(`Player ${client.playerName} fired shot (${event.shotId})`);
-    }
-    
-    // Special handling for jackalope_hit events
-    if (event.event_type === 'jackalope_hit') {
-        // Set a default spawn position if not provided
-        if (!event.spawnPosition) {
-            event.spawnPosition = [0, 3, 0];
-        }
+    } 
+    else if (event.event_type === 'player_respawn') {
+        // Handle respawn events
+        const respawnPlayerId = event.player_id;
+        const requestedBy = event.requestedBy;
         
-        // Log the hit event
-        logMessage(`Player ${client.playerName} hit jackalope ${event.jackalopeId} (respawning at position ${event.spawnPosition})`);
+        logMessage(`Player ${requestedBy} requested respawn for player ${respawnPlayerId}`);
         
-        // Find the jackalope player client to ensure they receive the hit event
-        let jackalopeClientId = null;
-        for (const [id, client] of clients.entries()) {
-            if (client.playerId === event.jackalopeId) {
-                jackalopeClientId = id;
-                break;
-            }
-        }
+        // Assign a spawn position for the respawning player
+        // For now, use a simple fixed position with some randomness
+        const spawnPosition = [
+            Math.random() * 20 - 10, // x: -10 to 10
+            3.0,                    // y: 3 units above ground
+            Math.random() * 20 - 10  // z: -10 to 10
+        ];
         
-        // If we found the jackalope client, ensure they're properly tagged as a jackalope
-        if (jackalopeClientId) {
-            const jackalopeClient = clients.get(jackalopeClientId);
-            if (jackalopeClient) {
-                // Tag the client as a jackalope if not already set
-                jackalopeClient.playerType = 'jackalope';
-                logMessage(`Found jackalope player ${event.jackalopeId}, ensuring type is set correctly`);
-            }
-        }
+        // Add spawn position to the event
+        event.spawnPosition = spawnPosition;
+        
+        logMessage(`Assigned spawn position for ${respawnPlayerId}: [${spawnPosition.join(', ')}]`);
     }
     
     // Broadcast to all players in session (including sender for consistent state)
