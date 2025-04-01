@@ -231,6 +231,11 @@ function handleClientMessage(clientId, message) {
                 handleLeaveSession(clientId);
                 break;
                 
+            case 'keepalive':
+                // Just silently acknowledge keepalive messages
+                // No need to respond or log an error
+                break;
+                
             default:
                 sendToClient(clientId, {
                     type: 'error',
@@ -459,6 +464,39 @@ function handleGameEvent(clientId, data) {
         event.spawnPosition = spawnPosition;
         
         logMessage(`Assigned spawn position for ${respawnPlayerId}: [${spawnPosition.join(', ')}]`);
+    }
+    else if (event.event_type === 'void_respawn') {
+        // Handle void respawn events (when player touches the black void circle)
+        const respawnPlayerId = event.player_id;
+        const requestedBy = event.requestedBy;
+        
+        logMessage(`Player ${requestedBy} triggered void respawn for player ${respawnPlayerId}`);
+        
+        // Use the provided spawn position or generate a random one around the map edge
+        let spawnPosition;
+        
+        if (event.spawnPosition && Array.isArray(event.spawnPosition) && event.spawnPosition.length === 3) {
+            spawnPosition = event.spawnPosition;
+            logMessage(`Using client-provided void spawn position: [${spawnPosition.join(', ')}]`);
+        } else {
+            // Generate a random spawn position around the edge of the map
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 50; // Distance from center
+            const x = Math.sin(angle) * distance;
+            const z = Math.cos(angle) * distance;
+            spawnPosition = [x, 7, z]; // Higher spawn point to prevent falling through terrain
+            
+            logMessage(`Generated random void spawn position: [${spawnPosition.join(', ')}]`);
+        }
+        
+        // Add spawn position to the event
+        event.spawnPosition = spawnPosition;
+        event.voidRespawn = true; // Flag to indicate this was triggered by the void
+        
+        // Change event type to standard respawn so clients can handle it with existing logic
+        event.event_type = 'player_respawn';
+        
+        logMessage(`Void respawn converted to player_respawn event for ${respawnPlayerId}`);
     }
     
     // Broadcast to all players in session (including sender for consistent state)
