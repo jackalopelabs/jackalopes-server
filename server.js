@@ -20,7 +20,12 @@ const PORT = process.env.SERVER_PORT || 8082;
 // Storage for active connections and game sessions
 const clients = new Map();
 const sessions = new Map();
+const sessionDeletionTimers = new Map(); // Grace period timers for empty sessions
 let clientIdCounter = 1;
+
+// Grace period before deleting empty sessions (ms)
+// Extended to 5 minutes to allow for page reloads and reconnections
+const SESSION_DELETION_GRACE_PERIOD = 300000;
 
 // Create an HTTP server for WebSocket handshake
 const server = http.createServer((req, res) => {
@@ -231,11 +236,6 @@ function handleClientMessage(clientId, message) {
                 handleLeaveSession(clientId);
                 break;
                 
-            case 'keepalive':
-                // Just silently acknowledge keepalive messages
-                // No need to respond or log an error
-                break;
-                
             default:
                 sendToClient(clientId, {
                     type: 'error',
@@ -248,12 +248,15 @@ function handleClientMessage(clientId, message) {
     }
 }
 
+// Track persistentId -> clientId mapping for graceful reconnection
+const persistentIdMap = new Map();
+
 /**
  * Handle authentication requests
  */
 function handleAuth(clientId, data) {
     const client = clients.get(clientId);
-    
+
     if (!data.playerName) {
         sendToClient(clientId, {
             type: 'error',
@@ -261,14 +264,78 @@ function handleAuth(clientId, data) {
         });
         return;
     }
-    
+
     const playerName = data.playerName.replace(/[^\w\s]/g, '');
-    
-    // Update client data
+    const persistentId = data.persistentId;
+
+    // Graceful reconnection: only swap if old socket is actually dead
+    // This prevents localStorage-shared persistentIds from kicking each other out
+    if (persistentId && persistentIdMap.has(persistentId)) {
+        const oldClientId = persistentIdMap.get(persistentId);
+        const oldClient = clients.get(oldClientId);
+
+        if (oldClient && oldClientId !== clientId) {
+            // Check if old socket is actually dead/disconnected
+            const oldSocketDead = !oldClient.socket || oldClient.socket.destroyed;
+
+            if (oldSocketDead) {
+                // Old socket is dead - this is a true reconnection, swap sockets
+                logMessage(`Reconnection detected for persistentId ${persistentId}: swapping client ${oldClientId} -> ${clientId}`);
+
+                // Transfer session membership to new client
+                client.sessionId = oldClient.sessionId;
+                client.playerName = oldClient.playerName || playerName;
+                client.authenticated = true;
+                client.playerId = oldClient.playerId;
+                client.persistentId = persistentId;
+
+                // Update session's player map to point to new clientId
+                if (oldClient.sessionId) {
+                    const session = sessions.get(oldClient.sessionId);
+                    if (session && session.players.has(oldClient.playerId)) {
+                        session.players.set(oldClient.playerId, clientId);
+                        logMessage(`Session ${oldClient.sessionId}: swapped clientId for player ${oldClient.playerId}`);
+                    }
+                }
+
+                clients.delete(oldClientId);
+
+                // Update persistentId map
+                persistentIdMap.set(persistentId, clientId);
+
+                // Send auth_success with existing playerId
+                sendToClient(clientId, {
+                    type: 'auth_success',
+                    player: {
+                        id: client.playerId,
+                        name: client.playerName
+                    }
+                });
+
+                logMessage(`Client ${clientId} reconnected as ${client.playerName} (swap from ${oldClientId})`);
+                return;
+            } else {
+                // Old socket is still alive - this is a DIFFERENT player with same persistentId
+                // (e.g., two browser windows sharing localStorage)
+                // Treat as a new player, don't overwrite the persistentId mapping
+                logMessage(`New connection with existing persistentId ${persistentId} but old socket still alive - treating as new player`);
+                // Fall through to normal auth flow below
+            }
+        }
+    }
+
+    // Normal auth flow for new connections
     client.playerName = playerName;
     client.authenticated = true;
     client.playerId = 'player_' + Math.random().toString(36).substr(2, 9);
-    
+    client.persistentId = persistentId;
+    client.playerType = data.playerType || null; // Store playerType from auth if provided
+
+    // Track persistentId -> clientId
+    if (persistentId) {
+        persistentIdMap.set(persistentId, clientId);
+    }
+
     sendToClient(clientId, {
         type: 'auth_success',
         player: {
@@ -276,7 +343,7 @@ function handleAuth(clientId, data) {
             name: playerName
         }
     });
-    
+
     logMessage(`Client ${clientId} authenticated as ${playerName}`);
 }
 
@@ -300,17 +367,22 @@ function handleJoinSession(clientId, data) {
     
     if (data.sessionKey) {
         sessionKey = data.sessionKey;
-        
+
+        // Log session search
+        logMessage(`Client ${clientId} looking for session with key: "${sessionKey}"`);
+        logMessage(`Current sessions: ${Array.from(sessions.entries()).map(([id, s]) => `${id}="${s.key}"`).join(', ') || 'none'}`);
+
         // Find session with this key
         let found = false;
         for (const [id, session] of sessions.entries()) {
             if (session.key === sessionKey) {
                 sessionId = id;
                 found = true;
+                logMessage(`Found existing session ${sessionId} with key "${sessionKey}" (${session.players.size} players)`);
                 break;
             }
         }
-        
+
         if (!found) {
             // Create new session with the provided key
             sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
@@ -319,6 +391,7 @@ function handleJoinSession(clientId, data) {
                 players: new Map(),
                 created: Date.now()
             });
+            logMessage(`Created NEW session ${sessionId} with key "${sessionKey}"`);
         }
     } else {
         // Create a new session with a random key
@@ -333,12 +406,93 @@ function handleJoinSession(clientId, data) {
     }
     
     const session = sessions.get(sessionId);
+
+    // Cancel any pending deletion timer for this session
+    if (sessionDeletionTimers.has(sessionId)) {
+        clearTimeout(sessionDeletionTimers.get(sessionId));
+        sessionDeletionTimers.delete(sessionId);
+        logMessage(`Session ${sessionId} deletion cancelled - player rejoining`);
+    }
+
+    // CRITICAL: Clean up any ghost players from the same persistentId in this session
+    // This handles cases where React StrictMode or page reloads create duplicate connections
+    // BUT only remove if the old socket is actually dead - don't kill live connections
+    if (client.persistentId) {
+        const ghostsToRemove = [];
+        for (const [playerId, otherClientId] of session.players.entries()) {
+            if (otherClientId === clientId) continue; // Skip ourselves
+            const otherClient = clients.get(otherClientId);
+            if (otherClient && otherClient.persistentId === client.persistentId) {
+                // Only treat as ghost if socket is actually dead
+                const socketDead = !otherClient.socket || otherClient.socket.destroyed;
+                if (socketDead) {
+                    ghostsToRemove.push({ playerId, clientId: otherClientId, client: otherClient });
+                } else {
+                    logMessage(`Same persistentId but socket still alive - allowing both connections (client ${otherClientId} and ${clientId})`);
+                }
+            }
+        }
+
+        // Remove ghost players and notify others
+        for (const ghost of ghostsToRemove) {
+            logMessage(`Removing ghost player ${ghost.playerId} (client ${ghost.clientId}) with same persistentId as joining client ${clientId}`);
+            session.players.delete(ghost.playerId);
+
+            // Notify other players about the removal
+            for (const [otherId, otherClientId] of session.players.entries()) {
+                sendToClient(otherClientId, {
+                    type: 'player_left',
+                    player: ghost.playerId,
+                    playerName: ghost.client.playerName
+                });
+            }
+
+            // Close the ghost's socket if still open
+            if (ghost.client.socket && !ghost.client.socket.destroyed) {
+                ghost.client.socket.destroy();
+            }
+            clients.delete(ghost.clientId);
+        }
+    }
+
+    // Store preferredRole from join request as playerType
+    if (data.preferredRole) {
+        client.playerType = data.preferredRole;
+    }
+    
+    // Auto-assign playerType if not set: balance teams
+    if (!client.playerType) {
+        let mercCount = 0;
+        let jackalopeCount = 0;
+        for (const [pid, cid] of session.players.entries()) {
+            const c = clients.get(cid);
+            if (c && c.playerType === 'merc') mercCount++;
+            else if (c && c.playerType === 'jackalope') jackalopeCount++;
+        }
+        client.playerType = mercCount <= jackalopeCount ? 'merc' : 'jackalope';
+        logMessage(`Auto-assigned playerType '${client.playerType}' to ${client.playerName} (mercs=${mercCount}, jackalopes=${jackalopeCount})`);
+    }
     
     // Add player to session
     session.players.set(client.playerId, clientId);
     client.sessionId = sessionId;
     
-    // Notify client
+    // Build list of existing players in session BEFORE adding the new player
+    const existingPlayers = [];
+    for (const [otherId, otherClientId] of session.players.entries()) {
+        if (otherId !== client.playerId) {
+            const otherClient = clients.get(otherClientId);
+            if (otherClient) {
+                existingPlayers.push({
+                    id: otherId,
+                    name: otherClient.playerName,
+                    playerType: otherClient.playerType
+                });
+            }
+        }
+    }
+
+    // Notify client of successful join
     sendToClient(clientId, {
         type: 'join_success',
         session: {
@@ -348,10 +502,25 @@ function handleJoinSession(clientId, data) {
         player: {
             id: client.playerId,
             name: client.playerName
-        }
+        },
+        playerType: client.playerType
     });
-    
-    // Notify other players in session
+
+    // CRITICAL: Send joining player info about all existing players in session
+    // This is what allows them to see other players who joined before them
+    for (const existingPlayer of existingPlayers) {
+        logMessage(`Sending player_joined for existing player ${existingPlayer.id} to new client ${clientId}`);
+        sendToClient(clientId, {
+            type: 'player_joined',
+            player: {
+                id: existingPlayer.id,
+                name: existingPlayer.name
+            },
+            playerType: existingPlayer.playerType
+        });
+    }
+
+    // Notify other players in session about the new player
     for (const [otherId, otherClientId] of session.players.entries()) {
         if (otherId !== client.playerId) {
             sendToClient(otherClientId, {
@@ -359,12 +528,13 @@ function handleJoinSession(clientId, data) {
                 player: {
                     id: client.playerId,
                     name: client.playerName
-                }
+                },
+                playerType: client.playerType
             });
         }
     }
-    
-    logMessage(`Client ${clientId} (${client.playerName}) joined session ${sessionId}`);
+
+    logMessage(`Client ${clientId} (${client.playerName}) joined session ${sessionId} with ${existingPlayers.length} existing players`);
 }
 
 /**
@@ -388,28 +558,15 @@ function handlePlayerUpdate(clientId, data) {
     const session = sessions.get(client.sessionId);
     if (!session) return;
     
-    // Extract the player type from the state data
-    const playerType = data.state.playerType || 'merc';
-    
-    // Store character type info with player record for future consistency
-    if (!client.playerType) {
-        client.playerType = playerType;
-        logMessage(`Set player ${client.playerId} (${client.playerName}) type to ${playerType}`);
-    }
-    
     // Broadcast to other players in session
     for (const [otherId, otherClientId] of session.players.entries()) {
         if (otherId !== client.playerId) {
             sendToClient(otherClientId, {
                 type: 'player_update',
-                player: client.playerId,
-                // Always include player's type in every update for consistency
-                playerType: client.playerType,
-                state: {
-                    ...data.state,
-                    // Ensure playerType is always included in state
-                    playerType: client.playerType
-                },
+                id: client.playerId,  // Client expects 'id' not 'player'
+                position: data.state?.position,
+                rotation: data.state?.rotation,
+                state: data.state,
                 timestamp: Date.now()
             });
         }
@@ -440,66 +597,9 @@ function handleGameEvent(clientId, data) {
     // Add player and timestamp information
     const event = data.event;
     event.player = client.playerId;
-    event.playerName = client.playerName;
     event.timestamp = Date.now();
     
-    // Handle specific event types
-    if (event.event_type === 'player_shoot') {
-        // If it's a shot event, include the player type to help with rendering
-        event.playerType = client.playerType || 'merc';
-        logMessage(`Player ${client.playerName} fired shot (${event.shotId})`);
-    } 
-    else if (event.event_type === 'player_respawn') {
-        // Handle respawn events
-        const respawnPlayerId = event.player_id;
-        const requestedBy = event.requestedBy;
-        
-        logMessage(`Player ${requestedBy} requested respawn for player ${respawnPlayerId}`);
-        
-        // Assign a fixed spawn position for the respawning player
-        // Use the standard Jackalope spawn point
-        const spawnPosition = [-10, 3, 10]; // Fixed spawn point
-        
-        // Add spawn position to the event
-        event.spawnPosition = spawnPosition;
-        
-        logMessage(`Assigned spawn position for ${respawnPlayerId}: [${spawnPosition.join(', ')}]`);
-    }
-    else if (event.event_type === 'void_respawn') {
-        // Handle void respawn events (when player touches the black void circle)
-        const respawnPlayerId = event.player_id;
-        const requestedBy = event.requestedBy;
-        
-        logMessage(`Player ${requestedBy} triggered void respawn for player ${respawnPlayerId}`);
-        
-        // Use the provided spawn position or generate a random one around the map edge
-        let spawnPosition;
-        
-        if (event.spawnPosition && Array.isArray(event.spawnPosition) && event.spawnPosition.length === 3) {
-            spawnPosition = event.spawnPosition;
-            logMessage(`Using client-provided void spawn position: [${spawnPosition.join(', ')}]`);
-        } else {
-            // Generate a random spawn position around the edge of the map
-            const angle = Math.random() * Math.PI * 2;
-            const distance = 50; // Distance from center
-            const x = Math.sin(angle) * distance;
-            const z = Math.cos(angle) * distance;
-            spawnPosition = [x, 7, z]; // Higher spawn point to prevent falling through terrain
-            
-            logMessage(`Generated random void spawn position: [${spawnPosition.join(', ')}]`);
-        }
-        
-        // Add spawn position to the event
-        event.spawnPosition = spawnPosition;
-        event.voidRespawn = true; // Flag to indicate this was triggered by the void
-        
-        // Change event type to standard respawn so clients can handle it with existing logic
-        event.event_type = 'player_respawn';
-        
-        logMessage(`Void respawn converted to player_respawn event for ${respawnPlayerId}`);
-    }
-    
-    // Broadcast to all players in session (including sender for consistent state)
+    // Broadcast to all players in session (including sender)
     for (const [_, otherClientId] of session.players.entries()) {
         sendToClient(otherClientId, {
             type: 'game_event',
@@ -568,10 +668,27 @@ function handleLeaveSession(clientId) {
         });
     }
     
-    // Clean up empty sessions
+    // Clean up empty sessions with a grace period
     if (session.players.size === 0) {
-        sessions.delete(client.sessionId);
-        logMessage(`Session ${client.sessionId} removed (empty)`);
+        const sessionIdToDelete = client.sessionId;
+        logMessage(`Session ${sessionIdToDelete} is empty, starting ${SESSION_DELETION_GRACE_PERIOD/1000}s grace period`);
+
+        // Cancel any existing timer for this session
+        if (sessionDeletionTimers.has(sessionIdToDelete)) {
+            clearTimeout(sessionDeletionTimers.get(sessionIdToDelete));
+        }
+
+        // Set a timer to delete after grace period
+        const timer = setTimeout(() => {
+            const sessionToDelete = sessions.get(sessionIdToDelete);
+            if (sessionToDelete && sessionToDelete.players.size === 0) {
+                sessions.delete(sessionIdToDelete);
+                logMessage(`Session ${sessionIdToDelete} removed after grace period (still empty)`);
+            }
+            sessionDeletionTimers.delete(sessionIdToDelete);
+        }, SESSION_DELETION_GRACE_PERIOD);
+
+        sessionDeletionTimers.set(sessionIdToDelete, timer);
     }
     
     logMessage(`Client ${clientId} (${client.playerName}) left session ${client.sessionId}`);
@@ -583,16 +700,21 @@ function handleLeaveSession(clientId) {
  */
 function handleDisconnect(clientId) {
     const client = clients.get(clientId);
-    
+
     if (!client) {
         return;
     }
-    
+
+    // Clean up persistentId map
+    if (client.persistentId && persistentIdMap.get(client.persistentId) === clientId) {
+        persistentIdMap.delete(client.persistentId);
+    }
+
     // Handle session leave if in a session
     if (client.sessionId) {
         handleLeaveSession(clientId);
     }
-    
+
     // Remove client
     clients.delete(clientId);
     logMessage(`Client ${clientId} disconnected`);
